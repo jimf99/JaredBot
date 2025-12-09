@@ -1,7 +1,11 @@
 #include <MsTimer2.h>        //internal timer 2
-#include <PinChangeInt.h>    //this library can make all pins of arduino UNO as external interrupt
+//#include <PinChangeInt.h>    //this library can make all pins of arduino UNO as external interrupt
 #include <MPU6050.h>      //MPU6050 library 
 #include <Wire.h>        //IIC communication library 
+#include <NeoSWSerial.h>
+
+// Use analog pins as digital: A3 = 17 (RX), A2 = 16 (TX)
+NeoSWSerial extSerial(17, 16); // RX, TX
 
 MPU6050 mpu6050;     //Instantiate an MPU6050 object; name mpu6050
 int16_t ax, ay, az, gx, gy, gz;     //Instantiate an MPU6050 object; name mpu6050
@@ -74,6 +78,8 @@ void setup()
   Wire.begin();                            //Join the I2C bus sequence
   Serial.begin(9600);                       //open serial monitor, set the baud rate to 9600
   delay(1500);
+  extSerial.begin(9600);
+  delay(1500);
   mpu6050.initialize();                       //initialize MPU6050
   delay(2);
 
@@ -98,6 +104,11 @@ void loop()
   Serial.print("\tK_Gyro_x = ");
   Serial.print(angle_speed);
   
+  extSerial.print("\tGyro_x = ");
+  extSerial.print(Gyro_x);
+  extSerial.print("\tK_Gyro_x = ");
+  extSerial.print(angle_speed);
+
   Serial.print("\t\tPD_pwm = ");
   Serial.print(PD_pwm);
   Serial.print("\t\tpwm1 = ");
@@ -106,6 +117,8 @@ void loop()
   Serial.print(pwm2);
 
   Serial.println();
+
+  extSerial.println();
 }
 
 /////////////////////////////////interrupt////////////////////////////
