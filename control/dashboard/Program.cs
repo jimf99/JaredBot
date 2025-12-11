@@ -1,8 +1,10 @@
 ﻿using System;
+using System.Collections.Generic;
 using System.Linq;
 using System.Net.Http;
 using System.Threading;
 using System.Threading.Tasks;
+using System.Threading.Tasks.Sources;
 using Spectre.Console;
 using Microsoft.AspNetCore.SignalR.Client;
 using Microsoft.AspNetCore.Http.Connections;
@@ -13,213 +15,88 @@ using System.Net.WebSockets;
 using System.Text;
 using System.Text.RegularExpressions;
 using System.Net.Sockets;
+using System.Globalization;
+using System.Reflection;
 
 public static class Program
 {
-    // Reconnect settings (used by raw websocket loop)
+    // Reconnect settings
     const int MinBackoffMs = 500;
     const int MaxBackoffMs = 30_000;
     const double BackoffFactor = 2.0;
 
+    // Panel settings
+    const int PanelHeight = 4; // visible lines in the top panel
+
+    static readonly LogBuffer Logs = new LogBuffer(PanelHeight);
+
     public static async Task Main(string[] args)
     {
-        // Simple CLI:
-        //   dotnet run -- [uri] [--raw] [--signalr] [--skip-negotiation] [--help]
-        // If mode flags are omitted, default is:
-        //   - signalr for http/https URIs
-        //   - raw for ws/wss URIs
-        if (args.Any(a => a.Equals("--help", StringComparison.OrdinalIgnoreCase) || a.Equals("-h", StringComparison.OrdinalIgnoreCase)))
+        // Start the live panel and key handler so all output goes into the top panel instead of scrolling the console.
+        using var uiCts = new CancellationTokenSource();
+        var liveTask = Task.Run(() => RunLivePanelLoop(uiCts.Token), CancellationToken.None);
+        var keyTask = Task.Run(() => RunKeyLoop(uiCts.Token), CancellationToken.None);
+
+        var uriString = args.Length > 0 ? args[0] : "ws://192.168.1.88/ws";
+
+        if (!Uri.TryCreate(uriString, UriKind.Absolute, out var uri) ||
+            (uri.Scheme != "ws" && uri.Scheme != "wss"))
         {
-            PrintUsage();
+            Log($"Invalid websocket URI: {uriString}");
+            await ShutdownUI(uiCts, liveTask, keyTask);
             return;
         }
 
-        // Extract flags and uri argument (first non-flag)
-        var flagArgs = args.Where(a => a.StartsWith("-", StringComparison.Ordinal)).ToArray();
-        var uriArg = args.FirstOrDefault(a => !a.StartsWith("-", StringComparison.Ordinal));
-        var uriString = string.IsNullOrWhiteSpace(uriArg) ? "ws://192.168.1.88/ws" : uriArg;
-
-        var explicitlySignalR = flagArgs.Any(a => a.Equals("--signalr", StringComparison.OrdinalIgnoreCase) || a.Equals("-s", StringComparison.OrdinalIgnoreCase));
-        var explicitlyRaw = flagArgs.Any(a => a.Equals("--raw", StringComparison.OrdinalIgnoreCase) || a.Equals("-r", StringComparison.OrdinalIgnoreCase));
-        var skipNegotiation = flagArgs.Any(a => a.Equals("--skip-negotiation", StringComparison.OrdinalIgnoreCase));
-
-        if (!Uri.TryCreate(uriString, UriKind.Absolute, out var uri))
-        {
-            AnsiConsole.MarkupLine($"[red]Invalid URI:[/] {EscapeMarkup(uriString)}");
-            return;
-        }
-
-        // Decide mode
-        bool useSignalR;
-        if (explicitlySignalR && explicitlyRaw)
-        {
-            AnsiConsole.MarkupLine("[red]Both --signalr and --raw specified. Choose only one.[/]");
-            return;
-        }
-        else if (explicitlySignalR) useSignalR = true;
-        else if (explicitlyRaw) useSignalR = false;
-        else
-        {
-            // Auto-detect by scheme
-            useSignalR = uri.Scheme.Equals("http", StringComparison.OrdinalIgnoreCase) || uri.Scheme.Equals("https", StringComparison.OrdinalIgnoreCase);
-        }
-
-        AnsiConsole.MarkupLine($"[underline yellow]Mode[/]: [green]{(useSignalR ? "SignalR client" : "Raw WebSocket client")}[/]  [underline yellow]URI[/]: [green]{EscapeMarkup(uriString)}[/]");
+        Log($"Raw WebSocket client connecting to: {uriString}");
 
         using var shutdownCts = new CancellationTokenSource();
         Console.CancelKeyPress += (s, e) =>
         {
             e.Cancel = true;
-            AnsiConsole.MarkupLine("[yellow]Shutdown requested...[/]");
+            Log("Shutdown requested...");
             shutdownCts.Cancel();
         };
 
-        if (useSignalR)
+        var backoffMs = MinBackoffMs;
+
+        while (!shutdownCts.IsCancellationRequested)
         {
-            await RunSignalRClientAsync(uriString, skipNegotiation, shutdownCts.Token);
-        }
-        else
-        {
-            var backoffMs = MinBackoffMs;
-            while (!shutdownCts.IsCancellationRequested)
-            {
-                try
-                {
-                    await ConnectAndReceiveLoopAsync(uri, shutdownCts.Token);
-                    backoffMs = MinBackoffMs;
-                }
-                catch (OperationCanceledException) when (shutdownCts.IsCancellationRequested)
-                {
-                    break;
-                }
-                catch (Exception ex)
-                {
-                    AnsiConsole.MarkupLine($"[red]WebSocket loop failed:[/] {EscapeMarkup(ex.Message)}");
-                    if (ex is WebSocketException wex)
-                        AnsiConsole.MarkupLine($"[grey]WebSocketException: ErrorCode={wex.ErrorCode}, WebSocketState={wex.WebSocketErrorCode}[/]");
-                    if (ex.InnerException is SocketException sex)
-                        AnsiConsole.MarkupLine($"[grey]SocketException: Code={sex.SocketErrorCode}, Message={EscapeMarkup(sex.Message)}[/]");
-
-                    AnsiConsole.MarkupLine($"[yellow]Reconnecting in {backoffMs}ms...[/]");
-                    try { await Task.Delay(backoffMs, shutdownCts.Token); } catch (OperationCanceledException) { break; }
-                    backoffMs = Math.Min(MaxBackoffMs, (int)(backoffMs * BackoffFactor));
-                }
-            }
-
-            AnsiConsole.MarkupLine("[grey]Client shutdown complete.[/]");
-        }
-    }
-
-    static void PrintUsage()
-    {
-        AnsiConsole.MarkupLine(@"[yellow]Usage:[/]
-  dotnet run -- [uri] [--raw | --signalr] [--skip-negotiation] [--help]
-
-Examples:
-  dotnet run -- ws://192.168.1.88/ws           # raw websocket (default for ws)
-  dotnet run -- http://host/hub --signalr      # Force SignalR client (use http/https if server expects negotiate)
-  dotnet run -- ws://host/ws --signalr --skip-negotiation  # SignalR over ws, skipping negotiate");
-    }
-
-    // -------- SignalR client mode --------
-    static async Task RunSignalRClientAsync(string hubUrl, bool skipNegotiation, CancellationToken cancellation)
-    {
-        AnsiConsole.MarkupLine($"[underline yellow]Starting SignalR client[/] connecting to: [green]{EscapeMarkup(hubUrl)}[/]");
-
-        var connection = new HubConnectionBuilder()
-            .WithUrl(hubUrl, options =>
-            {
-                options.Transports = HttpTransportType.WebSockets;
-                if (skipNegotiation) options.SkipNegotiation = true;
-
-                // Example: allow insecure certs in dev via handler (keeps parity with earlier samples)
-                options.HttpMessageHandlerFactory = handler =>
-                {
-                    if (handler is HttpClientHandler clientHandler)
-                    {
-                        clientHandler.ServerCertificateCustomValidationCallback = HttpClientHandler.DangerousAcceptAnyServerCertificateValidator;
-                    }
-                    return handler;
-                };
-            })
-            .ConfigureLogging(logging =>
-            {
-                logging.SetMinimumLevel(LogLevel.Trace);
-                logging.AddConsole();
-            })
-            .WithAutomaticReconnect()
-            .Build();
-
-        connection.Reconnecting += error =>
-        {
-            AnsiConsole.MarkupLine("[orange1]Reconnecting...[/]" + (error is null ? string.Empty : $" Reason: {EscapeMarkup(error.Message)}"));
-            return Task.CompletedTask;
-        };
-
-        connection.Reconnected += connectionId =>
-        {
-            AnsiConsole.MarkupLine($"[green]Reconnected[/] (connectionId: [grey]{EscapeMarkup(connectionId)}[/])");
-            return Task.CompletedTask;
-        };
-
-        connection.Closed += async error =>
-        {
-            AnsiConsole.MarkupLine("[red]Connection closed[/]" + (error is null ? string.Empty : $" Reason: {EscapeMarkup(error.Message)}"));
-            // With automatic reconnect enabled this may not be necessary, but attempt a restart for robustness.
             try
             {
-                await Task.Delay(TimeSpan.FromSeconds(2), CancellationToken.None);
-                await connection.StartAsync();
+                await ConnectAndReceiveLoopAsync(uri, shutdownCts.Token);
+                // If ConnectAndReceiveLoopAsync returns normally (server closed gracefully), reset backoff and retry
+                backoffMs = MinBackoffMs;
+            }
+            catch (OperationCanceledException) when (shutdownCts.IsCancellationRequested)
+            {
+                // Shutdown requested -> exit
+                break;
             }
             catch (Exception ex)
             {
-                AnsiConsole.MarkupLine($"[red]Failed to restart connection:[/] {EscapeMarkup(ex.Message)}");
+                // Detect abrupt socket close scenarios and log diagnostics
+                Log($"WebSocket loop failed: {ex.Message}");
+                if (ex is WebSocketException wex)
+                {
+                    Log($"WebSocketException: ErrorCode={wex.ErrorCode}, WebSocketState={wex.WebSocketErrorCode}");
+                }
+                if (ex.InnerException is SocketException sex)
+                {
+                    Log($"SocketException: Code={sex.SocketErrorCode}, Message={sex.Message}");
+                }
+
+                // Exponential backoff before retrying
+                Log($"Reconnecting in {backoffMs}ms...");
+                try { await Task.Delay(backoffMs, shutdownCts.Token); } catch (OperationCanceledException) { break; }
+                backoffMs = Math.Min(MaxBackoffMs, (int)(backoffMs * BackoffFactor));
             }
-        };
-
-        // Handlers - adapt to your Hub contract
-        connection.On<string>("Message", msg => LogReceived("Message(string)", msg));
-        connection.On<byte[]>("RawBinary", data =>
-        {
-            var preview = data.Length <= 64 ? Convert.ToHexString(data) : Convert.ToHexString(data, 0, 64) + "...";
-            AnsiConsole.MarkupLine($"[magenta]{DateTime.UtcNow:O}[/] [bold]RawBinary[/] -> length={data.Length} preview=[grey]{EscapeMarkup(preview)}[/]");
-        });
-
-        try
-        {
-            await connection.StartAsync(cancellation);
-            AnsiConsole.MarkupLine("[green]Connected.[/] Waiting for messages. Press Ctrl+C to exit.");
-        }
-        catch (OperationCanceledException) when (cancellation.IsCancellationRequested)
-        {
-            return;
-        }
-        catch (Exception ex)
-        {
-            AnsiConsole.MarkupLine($"[red]Failed to start SignalR connection:[/] {EscapeMarkup(ex.Message)}");
-            return;
         }
 
-        try
-        {
-            await Task.Delay(Timeout.Infinite, cancellation);
-        }
-        catch (OperationCanceledException) { /* expected */ }
+        Log("Client shutdown complete.");
 
-        AnsiConsole.MarkupLine("[grey]Stopping SignalR connection...[/]");
-        try
-        {
-            await connection.StopAsync();
-            await connection.DisposeAsync();
-            AnsiConsole.MarkupLine("[green]Stopped.[/]");
-        }
-        catch (Exception ex)
-        {
-            AnsiConsole.MarkupLine($"[red]Error stopping connection:[/] {EscapeMarkup(ex.Message)}");
-        }
+        await ShutdownUI(uiCts, liveTask, keyTask);
     }
 
-    // -------- Raw websocket mode (unchanged) --------
     static async Task ConnectAndReceiveLoopAsync(Uri uri, CancellationToken cancellation)
     {
         using var ws = new ClientWebSocket();
@@ -230,7 +107,7 @@ Examples:
         connectTimeout.CancelAfter(TimeSpan.FromSeconds(15));
 
         await ws.ConnectAsync(uri, connectTimeout.Token);
-        AnsiConsole.MarkupLine("[green]Connected.[/] Receiving frames until shutdown or remote close...");
+        Log("Connected. Receiving frames until shutdown or remote close...");
 
         var buffer = new byte[16 * 1024];
 
@@ -249,7 +126,7 @@ Examples:
 
                         if (result.MessageType == WebSocketMessageType.Close)
                         {
-                            AnsiConsole.MarkupLine($"[orange1]Server sent close:[/] {result.CloseStatus} - {EscapeMarkup(result.CloseStatusDescription)}");
+                            Log($"Server sent close: {result.CloseStatus} - {result.CloseStatusDescription}");
                             // A proper close handshake: send close in response and exit the loop normally.
                             await ws.CloseOutputAsync(WebSocketCloseStatus.NormalClosure, "Client ack", CancellationToken.None);
                             return;
@@ -260,12 +137,15 @@ Examples:
                 }
                 catch (WebSocketException wsex)
                 {
-                    AnsiConsole.MarkupLine($"[red]Receive failed: {EscapeMarkup(wsex.Message)}[/]");
-                    AnsiConsole.MarkupLine($"[grey]WebSocketState={ws.State}, ErrorCode={wsex.ErrorCode}, WebSocketErrorCode={wsex.WebSocketErrorCode}[/]");
+                    // This is commonly where "remote party closed ... without completing the close handshake" appears.
+                    // Log details and throw to trigger outer reconnect/backoff handling.
+                    Log($"Receive failed: {wsex.Message}");
+                    Log($"WebSocketState={ws.State}, ErrorCode={wsex.ErrorCode}, WebSocketErrorCode={wsex.WebSocketErrorCode}");
                     throw;
                 }
                 catch (OperationCanceledException) when (cancellation.IsCancellationRequested)
                 {
+                    // shutdown requested -> break
                     break;
                 }
 
@@ -275,6 +155,7 @@ Examples:
         }
         finally
         {
+            // Try to close cleanly if still open; ignore errors
             if (ws.State == WebSocketState.Open)
             {
                 try { await ws.CloseAsync(WebSocketCloseStatus.NormalClosure, "Client done", CancellationToken.None); }
@@ -286,29 +167,22 @@ Examples:
     static Task ProcessFrameAsync(WebSocketMessageType type, byte[] payload)
     {
         var utc = DateTime.UtcNow;
-        AnsiConsole.MarkupLine($"[aqua]{utc:O}[/] [bold]Frame[/] -> type=[green]{type}[/] length=[grey]{payload.Length}[/]");
+        Log($"{utc:O} Frame -> type={type} length={payload.Length}");
 
         if (type == WebSocketMessageType.Text)
         {
             var text = SafeUtf8(payload);
-            AnsiConsole.MarkupLine($"[white]{EscapeMarkup(text)}[/]");
+            Log(text);
 
             var pairs = ParseKeyValuePairs(text);
             if (pairs.Count > 0)
             {
-                var table = new Table()
-                    .Border(TableBorder.Rounded)
-                    .AddColumn("Key")
-                    .AddColumn("Value");
-
                 foreach (var kv in pairs)
-                    table.AddRow(kv.Key, kv.Value);
-
-                AnsiConsole.Write(table);
+                    Log($"{kv.Key} = {kv.Value}");
             }
             else
             {
-                AnsiConsole.MarkupLine("[grey]No key/value pairs parsed from text frame.[/]");
+                Log("No key/value pairs parsed from text frame.");
             }
         }
         else
@@ -316,9 +190,9 @@ Examples:
             var previewLen = Math.Min(payload.Length, 128);
             var hex = Convert.ToHexString(payload, 0, previewLen);
             var preview = payload.Length <= previewLen ? hex : hex + "...";
-            AnsiConsole.MarkupLine($"[magenta]Binary preview (hex):[/] [grey]{EscapeMarkup(preview)}[/]");
+            Log($"Binary preview (hex): {preview}");
             var base64 = Convert.ToBase64String(payload);
-            AnsiConsole.MarkupLine($"[grey]Base64 (first 256 chars):[/] {EscapeMarkup(base64.Substring(0, Math.Min(256, base64.Length)))}");
+            Log($"Base64 (first 256 chars): {base64.Substring(0, Math.Min(256, base64.Length))}");
         }
 
         return Task.CompletedTask;
@@ -346,10 +220,266 @@ Examples:
         catch { return "<invalid-utf8>"; }
     }
 
-    static void LogReceived(string method, string payload)
+    // ---------------- UI / live panel ----------------
+
+    static void RunLivePanelLoop(CancellationToken cancellation)
     {
-        AnsiConsole.MarkupLine($"[aqua]{DateTime.UtcNow:O}[/] [bold]{EscapeMarkup(method)}[/] -> [grey]{EscapeMarkup(payload)}[/]");
+        // Initial renderable (LogBuffer now returns a cached panel instance)
+        var panel = Logs.GetPanelRenderable();
+
+        // Use Live to keep the panel at the top and update it frequently.
+        // This prevents other console text from scrolling the screen because we avoid writing to the console directly.
+        AnsiConsole.Live(panel)
+            .AutoClear(false)
+            .Overflow(VerticalOverflow.Crop)
+            .Cropping(VerticalOverflowCropping.Top)
+            .Start(ctx =>
+            {
+                while (!cancellation.IsCancellationRequested)
+                {
+                    // UpdateTarget will receive the same Panel instance (its internals are updated in-place).
+                    var updated = Logs.GetPanelRenderable();
+                    ctx.UpdateTarget(updated);
+                    ctx.Refresh();
+                    Thread.Sleep(100);
+                }
+            });
     }
 
-    static string EscapeMarkup(string? s) => s is null ? string.Empty : s.Replace("[", "&#91;").Replace("]", "&#93;");
+    static async Task RunKeyLoop(CancellationToken cancellation)
+    {
+        // Key controls:
+        // Up/Down: scroll one line
+        // PageUp/PageDown: scroll page
+        // Home: go to top
+        // End: go to bottom (resume auto-scroll)
+        // A: toggle auto-scroll
+        while (!cancellation.IsCancellationRequested)
+        {
+            try
+            {
+                if (!Console.KeyAvailable)
+                {
+                    await Task.Delay(100, cancellation);
+                    continue;
+                }
+
+                var key = Console.ReadKey(true);
+                switch (key.Key)
+                {
+                    case ConsoleKey.UpArrow:
+                        Logs.ScrollUp(1);
+                        break;
+                    case ConsoleKey.DownArrow:
+                        Logs.ScrollDown(1);
+                        break;
+                    case ConsoleKey.PageUp:
+                        Logs.PageUp();
+                        break;
+                    case ConsoleKey.PageDown:
+                        Logs.PageDown();
+                        break;
+                    case ConsoleKey.Home:
+                        Logs.Top();
+                        break;
+                    case ConsoleKey.End:
+                        Logs.Bottom();
+                        break;
+                    case ConsoleKey.A:
+                        Logs.ToggleAutoScroll();
+                        break;
+                }
+            }
+            catch (OperationCanceledException) { break; }
+            catch { /* ignore unexpected read errors */ }
+        }
+    }
+
+    static async Task ShutdownUI(CancellationTokenSource uiCts, Task liveTask, Task keyTask)
+    {
+        try { uiCts.Cancel(); } catch { }
+        try { await Task.WhenAll(liveTask, keyTask); } catch { }
+    }
+
+    // Central logging helper that pushes output into the top panel instead of the console.
+    static void Log(string message)
+    {
+        Logs.Add(message);
+    }
+
+    static void Log(string format, params object[] args)
+    {
+        Logs.Add(string.Format(format, args));
+    }
+
+    // ---------------- LogBuffer implementation ----------------
+    class LogBuffer
+    {
+        readonly object _lock = new object();
+        readonly List<string> _lines = new List<string>();
+        readonly int _viewHeight;
+        int _viewportStart = 0; // index of first visible line
+        bool _autoScroll = true;
+        const int MaxStoredLines = 10_000;
+
+        // Reused panel instance (we update its internals rather than creating a new Panel every refresh)
+        Panel _cachedPanel;
+
+        public LogBuffer(int viewHeight)
+        {
+            _viewHeight = Math.Max(1, viewHeight);
+
+            // Create an initial empty panel that will be reused.
+            var emptyLines = Enumerable.Range(0, _viewHeight).Select(_ => string.Empty);
+            var initialContent = string.Join("\n", emptyLines);
+            var headerRaw = $"Logs (0 total) [autoscroll]";
+            _cachedPanel = new Panel(new Markup(Markup.Escape(initialContent)))
+            {
+                Header = new PanelHeader(Markup.Escape(headerRaw)),
+                Expand = true,
+            };
+        }
+
+        public void Add(string raw)
+        {
+            var line = raw?.TrimEnd() ?? string.Empty;
+            lock (_lock)
+            {
+                _lines.Add(line);
+                if (_lines.Count > MaxStoredLines)
+                {
+                    var remove = _lines.Count - MaxStoredLines;
+                    _lines.RemoveRange(0, remove);
+                    _viewportStart = Math.Max(0, _viewportStart - remove);
+                }
+
+                if (_autoScroll)
+                {
+                    _viewportStart = Math.Max(0, _lines.Count - _viewHeight);
+                }
+                else
+                {
+                    // keep viewportStart within valid range
+                    _viewportStart = Math.Min(_viewportStart, Math.Max(0, _lines.Count - _viewHeight));
+                }
+            }
+        }
+
+        public void ScrollUp(int lines)
+        {
+            lock (_lock)
+            {
+                _autoScroll = false;
+                _viewportStart = Math.Max(0, _viewportStart - Math.Max(1, lines));
+            }
+        }
+
+        public void ScrollDown(int lines)
+        {
+            lock (_lock)
+            {
+                _viewportStart = Math.Min(Math.Max(0, _lines.Count - _viewHeight), _viewportStart + Math.Max(1, lines));
+            }
+        }
+
+        public void PageUp() => ScrollUp(_viewHeight);
+        public void PageDown() => ScrollDown(_viewHeight);
+        public void Top()
+        {
+            lock (_lock)
+            {
+                _autoScroll = false;
+                _viewportStart = 0;
+            }
+        }
+
+        public void Bottom()
+        {
+            lock (_lock)
+            {
+                _autoScroll = true;
+                _viewportStart = Math.Max(0, _lines.Count - _viewHeight);
+            }
+        }
+
+        public void ToggleAutoScroll()
+        {
+            lock (_lock)
+            {
+                _autoScroll = !_autoScroll;
+                if (_autoScroll)
+                    _viewportStart = Math.Max(0, _lines.Count - _viewHeight);
+            }
+        }
+
+        public Panel GetPanelRenderable()
+        {
+            lock (_lock)
+            {
+                var visible = new List<string>();
+                //for (int i = 0; i < _viewHeight; i++)
+                //{
+                //    var idx = _viewportStart + i;
+                //    if (idx >= 0 && idx < _lines.Count)
+                //        visible.Add(Program.EscapeMarkup(_lines[idx]));
+                //    else
+                //        visible.Add(string.Empty);
+                //}
+
+                var headerRaw = $"Logs ({_lines.Count} total) {(_autoScroll ? "[autoscroll]" : "[manual]")}";
+                var headerEscaped = Program.EscapeMarkup(headerRaw);
+                var content = string.Join("", visible);
+                var markup = new Markup(content);
+
+                // Try to update the cached panel's internal renderable in-place to avoid creating a new Panel instance.
+                // We set the public Header and attempt to set the panel's private renderable field via reflection.
+                _cachedPanel.Header = new PanelHeader(headerEscaped);
+
+                // Reflection: try several likely private field/backing-field names used across versions.
+                var panelType = typeof(Panel);
+                FieldInfo? field = panelType.GetField("_renderable", BindingFlags.Instance | BindingFlags.NonPublic)
+                                       ?? panelType.GetField("renderable", BindingFlags.Instance | BindingFlags.NonPublic)
+                                       ?? panelType.GetField("<Renderable>k__BackingField", BindingFlags.Instance | BindingFlags.NonPublic);
+
+                if (field != null)
+                {
+                    field.SetValue(_cachedPanel, markup);
+                }
+                else
+                {
+                    // Fallback: if reflection failed, replace cached panel with a new instance
+                    _cachedPanel = new Panel(markup)
+                    {
+                        Header = new PanelHeader(headerEscaped),
+                        Expand = true,
+                    };
+                }
+
+                return _cachedPanel;
+            }
+        }
+    }
+
+    static string EscapeMarkup(string? s) => s is null ? string.Empty : Markup.Escape(s);
+
+    // Helper to crop by text elements (avoids splitting surrogate pairs / combined glyphs)
+    static string CropTextElements(string s, int startElement, int elementCount)
+    {
+        if (string.IsNullOrEmpty(s))
+            return string.Empty;
+
+        var info = new StringInfo(s);
+        var total = info.LengthInTextElements;
+        if (startElement >= total)
+            return string.Empty;
+
+        var take = Math.Min(elementCount, total - startElement);
+        var sub = info.SubstringByTextElements(startElement, take) ?? string.Empty;
+
+        // pad to width so lines are equal length (keeps layout stable)
+        if (sub.Length < elementCount)
+            sub = sub.PadRight(elementCount);
+
+        return sub;
+    }
 }
