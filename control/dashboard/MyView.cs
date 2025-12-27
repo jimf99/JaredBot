@@ -19,7 +19,7 @@ namespace dashboard {
             button1.Accepting += (s, e) =>
             {
                 e.Handled = true;
-                //Terminal.Gui.Views.MessageBox.Query("Hello", "Hello There!", "Ok");
+                Terminal.Gui.Views.MessageBox.Query("Hello", "Hello There!", "Ok");
             };
         }
     }
