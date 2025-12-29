@@ -1,5 +1,6 @@
 ﻿using System;
 using System.Collections.Generic;
+using System.Threading;
 using Terminal.Gui.App;
 using Terminal.Gui.ViewBase;
 using Terminal.Gui.Views;
@@ -11,6 +12,9 @@ namespace dashboard;
 public sealed class Dashboard : Window
 {
     public MenuBarv2 MenuBarV2 { get; set; }
+    public LogView LogView { get; set; }
+    private Timer? _dataSimulationTimer;
+    private readonly Random _random = new();
 
     public Dashboard()
     {
@@ -41,6 +45,66 @@ public sealed class Dashboard : Window
         ]);
 
         Add(MenuBarV2);
+
+        // Add LogView to the lower portion of the dashboard
+        LogView = new LogView
+        {
+            X = 0,
+            Y = Pos.AnchorEnd(10), // 10 lines from bottom, adjust as needed
+            Width = Dim.Fill(),
+            Height = 10, // Fixed height, adjust as needed
+            CanFocus = false,
+            BorderStyle = LineStyle.Single,
+            Title = "Log"
+        };
+
+        Add(LogView);
+
+        // Start simulating data
+        StartDataSimulation();
+    }
+
+    private void StartDataSimulation()
+    {
+        ScheduleNextDataEvent();
+    }
+
+    private void ScheduleNextDataEvent()
+    {
+        // Random interval between 1-5 seconds
+        int interval = _random.Next(1000, 5001);
+
+        _dataSimulationTimer = new Timer(_ =>
+        {
+            Application.Invoke(() =>
+            {
+                GenerateAndLogMockData();
+                ScheduleNextDataEvent();
+            });
+        }, null, interval, System.Threading.Timeout.Infinite);
+    }
+
+    private void GenerateAndLogMockData()
+    {
+        var sensors = new[] { "TEMP", "HUMID", "PRESS", "LIGHT", "SOUND" };
+        var locations = new[] { "Room-A", "Room-B", "Room-C", "Outdoor" };
+
+        string sensor = sensors[_random.Next(sensors.Length)];
+        string location = locations[_random.Next(locations.Length)];
+        double value = _random.NextDouble() * 100;
+        string status = _random.Next(100) > 10 ? "OK" : "WARN";
+
+        string csvData = $"{sensor},{location},{value:F2},{status}";
+        this.AppendLog(csvData);
+    }
+
+    protected override void Dispose(bool disposing)
+    {
+        if (disposing)
+        {
+            _dataSimulationTimer?.Dispose();
+        }
+        base.Dispose(disposing);
     }
 }
 
@@ -48,21 +112,7 @@ public static class DashboardExtensions
 {
     public static void AppendLog(this Dashboard dashboard, string message)
     {
-        var logView = FindFirstLogView(dashboard);
-        if (logView == null)
-        {
-            logView = new LogView
-            {
-                X = 0,
-                Y = Pos.Bottom(dashboard.MenuBarV2),
-                Width = Dim.Fill(),
-                Height = Dim.Fill(),
-                CanFocus = false
-            };
-            dashboard.Add(logView);
-        }
-
-        logView.AddMessage(message);
+        dashboard.LogView.AddMessage(message);
     }
 
     private static LogView? FindFirstLogView(View parent)
@@ -99,28 +149,20 @@ public class LogView : View
         SetNeedsDraw();
     }
 
-    public override void Draw(DrawContext drawContext)
+    protected override bool OnDrawingContent()
     {
-        // Always call base first so background, border, etc. are drawn.
-        base.Draw(drawContext);
+        base.OnDrawingContent();
 
-        // The area we can draw into, relative to this view.
-        Rectangle bounds = drawContext.Bounds;
-
-        int width = bounds.Size.Width;
-        int height = bounds.Size.Height;
+        var bounds = Viewport;
+        int width = bounds.Width;
+        int height = bounds.Height;
 
         // Decide which subset of lines to show: last "height" lines.
         int startIndex = Math.Max(0, _logMessages.Count - height);
         int line = 0;
 
-        // Use the context to draw text. Most builds expose a "MakeContent" / "AddRune" API;
-        // but Move/AddStr still work as helpers from View.
         for (int i = startIndex; i < _logMessages.Count && line < height; i++, line++)
         {
-            // Position within our local bounds (x is relative to left edge of this view)
-            Move(bounds.X, bounds.Y + line);
-
             var text = _logMessages[i];
 
             if (text.Length > width)
@@ -128,7 +170,10 @@ public class LogView : View
                 text = text[..width];
             }
 
+            Move(0, line);
             AddStr(text);
         }
+
+        return true;
     }
 }
