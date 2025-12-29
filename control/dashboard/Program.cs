@@ -1,14 +1,25 @@
-﻿using Terminal.Gui.App;
+﻿using dashboard.Views;
+using Terminal.Gui.App;
 using Terminal.Gui.Configuration;
-using Terminal.Gui.ViewBase;
 
-// Override the default configuration for the application to use the Amber Phosphor theme
-ConfigurationManager.RuntimeConfig = """{ "Theme": "Amber Phosphor" }""";
-ConfigurationManager.Enable(ConfigLocations.All);
+namespace dashboard;
 
-Application.Init();
+public static class Program
+{
+    public static void Main()
+    {
+        // Configure application theme
+        ConfigurationManager.RuntimeConfig = """{ "Theme": "Amber Phosphor" }""";
+        ConfigurationManager.Enable(ConfigLocations.All);
 
-Application.Run<Dashboard>();
+        Application.Init();
 
-// Dispose the app to clean up and enable Console.WriteLine below
-Application.Shutdown();
+        var dashboardWindow = new Dashboard();
+        dashboardWindow.LogViewer.AddMessage("Application started");
+        dashboardWindow.LogViewer.AddMessage("Processing data...");
+
+        Application.Run(dashboardWindow);
+
+        Application.Shutdown();
+    }
+}
