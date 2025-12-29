@@ -1,104 +1,134 @@
-﻿using Terminal.Gui.App;
+﻿using System;
+using System.Collections.Generic;
+using Terminal.Gui.App;
+using Terminal.Gui.ViewBase;
 using Terminal.Gui.Views;
-// To see this output on the screen it must be done after shutdown,
-// which restores the previous screen.
-//Console.WriteLine($@"Username: {ExampleWindow.UserName}");
+using Terminal.Gui.Drawing;
+using System.Drawing; // for DrawContext, Rectangle, Size, Colors, etc.
 
-// Defines a top-level window with border and title
+namespace dashboard;
+
 public sealed class Dashboard : Window
 {
-    public static string UserName { get; set; }
     public MenuBarv2 MenuBarV2 { get; set; }
 
     public Dashboard()
     {
-        Title = $"Dashboard App ({Application.QuitKey} to quit)";
+        Title = "Dashboard";
 
-        this.MenuBarV2 = new MenuBarv2(new MenuBarItemv2[]
-        {
-            new MenuBarItemv2("_File", new MenuItemv2[]
-            {
-                new MenuItemv2("_New", "Create a new file", () => {}),
-                new MenuItemv2("_Open", "Open a file", () => {}),
-                new MenuItemv2("_Save", "Save the file", () => {}),
+        MenuBarV2 = new MenuBarv2(
+        [
+            new MenuBarItemv2("_File",
+            [
+                new MenuItemv2("_New", "Create a new file", () => { }),
+                new MenuItemv2("_Open", "Open a file", () => { }),
+                new MenuItemv2("_Save", "Save the file", () => { }),
                 new MenuItemv2("_Quit", "Quit the application", () => Application.RequestStop())
-            }),
-            new MenuBarItemv2("_Edit", new MenuItemv2[]
-            {
-                new MenuItemv2("_Cut", "Cut selection", () => {}),
-                new MenuItemv2("_Copy", "Copy selection", () => {}),
-                new MenuItemv2("_Paste", "Paste clipboard", () => {})
-            }),
-            new MenuBarItemv2("_Help", new MenuItemv2[]
-            {
+            ]),
+            new MenuBarItemv2("_Edit",
+            [
+                new MenuItemv2("_Cut", "Cut selection", () => { }),
+                new MenuItemv2("_Copy", "Copy selection", () => { }),
+                new MenuItemv2("_Paste", "Paste clipboard", () => { })
+            ]),
+            new MenuBarItemv2("_Help",
+            [
                 new MenuItemv2("_About", "About this app", () =>
                 {
                     MessageBox.Query("About", "Terminal.Gui v2 Dashboard Example", "OK");
                 })
-            })
-        });
+            ])
+        ]);
 
-        //// Create input components and labels
-        //var usernameLabel = new Label { Text = "Username:" };
+        Add(MenuBarV2);
+    }
+}
 
-        //var userNameText = new TextField
-        //{
-        //    // Position text field adjacent to the label
-        //    X = Pos.Right(usernameLabel) + 1,
+public static class DashboardExtensions
+{
+    public static void AppendLog(this Dashboard dashboard, string message)
+    {
+        var logView = FindFirstLogView(dashboard);
+        if (logView == null)
+        {
+            logView = new LogView
+            {
+                X = 0,
+                Y = Pos.Bottom(dashboard.MenuBarV2),
+                Width = Dim.Fill(),
+                Height = Dim.Fill(),
+                CanFocus = false
+            };
+            dashboard.Add(logView);
+        }
 
-        //    // Fill remaining horizontal space
-        //    Width = Dim.Fill()
-        //};
+        logView.AddMessage(message);
+    }
 
-        //var passwordLabel = new Label
-        //{
-        //    Text = "Password:",
-        //    X = Pos.Left(usernameLabel),
-        //    Y = Pos.Bottom(usernameLabel) + 1
-        //};
+    private static LogView? FindFirstLogView(View parent)
+    {
+        if (parent is LogView found)
+        {
+            return found;
+        }
 
-        //var passwordText = new TextField
-        //{
-        //    Secret = true,
+        foreach (var child in parent.SubViews)
+        {
+            var result = FindFirstLogView(child);
+            if (result is not null)
+            {
+                return result;
+            }
+        }
 
-        //    // align with the text box above
-        //    X = Pos.Left(userNameText),
-        //    Y = Pos.Top(passwordLabel),
-        //    Width = Dim.Fill()
-        //};
+        return null;
+    }
+}
 
-        //// Create login button
-        //var btnLogin = new Button
-        //{
-        //    Text = "Login",
-        //    Y = Pos.Bottom(passwordLabel) + 1,
+public class LogView : View
+{
+    private readonly List<string> _logMessages = new();
 
-        //    // center the login button horizontally
-        //    X = Pos.Center(),
-        //    IsDefault = true
-        //};
+    public void AddMessage(string message)
+    {
+        _logMessages.Add($"{DateTime.Now:HH:mm:ss}: {message}");
 
-        //// When login button is clicked display a message popup
-        //btnLogin.Accepting += (s, e) =>
-        //{
-        //    if (userNameText.Text == "admin" && passwordText.Text == "password")
-        //    {
-        //        MessageBox.Query(Application.Top.Title, "Logging In", "Login Successful", "Ok");
-        //        UserName = userNameText.Text;
-        //        Application.RequestStop();
-        //    }
-        //    else
-        //    {
-        //        MessageBox.ErrorQuery(Application.Top.Title, "Logging In", "Incorrect username or password", "Ok");
-        //    }
+        // In v2, these are the standard invalidation methods.
+        // If one of them doesn't exist in your build, you can safely remove that line.
+        SetNeedsLayout();
+        SetNeedsDraw();
+    }
 
-        //    // When Accepting is handled, set e.Handled to true to prevent further processing.
-        //    e.Handled = true;
-        //};
+    public override void Draw(DrawContext drawContext)
+    {
+        // Always call base first so background, border, etc. are drawn.
+        base.Draw(drawContext);
 
-        //// Add the views to the Window
-        //Add(usernameLabel, userNameText, passwordLabel, passwordText, btnLogin);
+        // The area we can draw into, relative to this view.
+        Rectangle bounds = drawContext.Bounds;
 
-        Add(this.MenuBarV2);
+        int width = bounds.Size.Width;
+        int height = bounds.Size.Height;
+
+        // Decide which subset of lines to show: last "height" lines.
+        int startIndex = Math.Max(0, _logMessages.Count - height);
+        int line = 0;
+
+        // Use the context to draw text. Most builds expose a "MakeContent" / "AddRune" API;
+        // but Move/AddStr still work as helpers from View.
+        for (int i = startIndex; i < _logMessages.Count && line < height; i++, line++)
+        {
+            // Position within our local bounds (x is relative to left edge of this view)
+            Move(bounds.X, bounds.Y + line);
+
+            var text = _logMessages[i];
+
+            if (text.Length > width)
+            {
+                text = text[..width];
+            }
+
+            AddStr(text);
+        }
     }
 }
