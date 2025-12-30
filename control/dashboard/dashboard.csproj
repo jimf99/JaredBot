@@ -8,7 +8,9 @@
   </PropertyGroup>
 
   <ItemGroup>
-	  <PackageReference Include="Terminal.Gui" Version="2.0.0-develop.4519" />
+	  <PackageReference Include="Microsoft.AspNetCore.SignalR.Client" Version="10.0.1" />
+	  <PackageReference Include="Microsoft.Extensions.Logging" Version="10.0.1" />
+	  <PackageReference Include="Terminal.Gui" Version="2.0.0-develop.4746" />
   </ItemGroup>
 
 </Project>

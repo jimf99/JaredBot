@@ -9,10 +9,11 @@ namespace dashboard.Views;
 
 public sealed class Dashboard : Window
 {
-    public MenuBarv2 MenuBarV2 { get; private set; }
+    public MenuBar MenuBarV2 { get; private set; }
     public LogView LogViewer { get; private set; }
 
     private readonly DataSimulationService _dataSimulation;
+    private readonly SignalRListenerService _signalR;
 
     public Dashboard()
     {
@@ -21,33 +22,41 @@ public sealed class Dashboard : Window
         InitializeMenu();
         InitializeLogView();
 
-        // Initialize data simulation service
+        // Start data simulation (optional: comment this out once SignalR is verified)
         _dataSimulation = new DataSimulationService(message => LogViewer.AddMessage(message));
         _dataSimulation.Start();
+
+        // TODO: replace with your actual hub URL
+        var hubUrl = "http://localhost:5000/hub/messages";
+
+        _signalR = new SignalRListenerService(hubUrl, message => LogViewer.AddMessage(message));
+
+        // Fire-and-forget; TUI has no async ctor
+        _ = _signalR.StartAsync();
     }
 
     private void InitializeMenu()
     {
-        MenuBarV2 = new MenuBarv2(
+        MenuBarV2 = new MenuBar(
         [
-            new MenuBarItemv2("_File",
+            new MenuBarItem("_File",
             [
-                new MenuItemv2("_New", "Create a new file", () => { }),
-                new MenuItemv2("_Open", "Open a file", () => { }),
-                new MenuItemv2("_Save", "Save the file", () => { }),
-                new MenuItemv2("_Quit", "Quit the application", () => Application.RequestStop())
+                new MenuItem("_New", "Create a new file", () => { }),
+                new MenuItem("_Open", "Open a file", () => { }),
+                new MenuItem("_Save", "Save the file", () => { }),
+                new MenuItem("_Quit", "Quit the application", () => Application.RequestStop())
             ]),
-            new MenuBarItemv2("_Edit",
+            new MenuBarItem("_Edit",
             [
-                new MenuItemv2("_Cut", "Cut selection", () => { }),
-                new MenuItemv2("_Copy", "Copy selection", () => { }),
-                new MenuItemv2("_Paste", "Paste clipboard", () => { })
+                new MenuItem("_Cut", "Cut selection", () => { }),
+                new MenuItem("_Copy", "Copy selection", () => { }),
+                new MenuItem("_Paste", "Paste clipboard", () => { })
             ]),
-            new MenuBarItemv2("_Help",
+            new MenuBarItem("_Help",
             [
-                new MenuItemv2("_About", "About this app", () =>
+                new MenuItem("_About", "About this app", () =>
                 {
-                    MessageBox.Query("About", "Terminal.Gui v2 Dashboard Example", "OK");
+                    MessageBox.Query(App, "Terminal.Gui v2 Dashboard Example", "OK");
                 })
             ])
         ]);
@@ -76,7 +85,14 @@ public sealed class Dashboard : Window
         if (disposing)
         {
             _dataSimulation?.Dispose();
+
+            if (_signalR is not null)
+            {
+                // Best-effort async dispose
+                _ = _signalR.DisposeAsync();
+            }
         }
+
         base.Dispose(disposing);
     }
 }

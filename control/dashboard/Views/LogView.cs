@@ -16,9 +16,9 @@ public class LogView : View
         SetNeedsDraw();
     }
 
-    protected override bool OnDrawingContent()
+    protected override bool OnDrawingSubViews()
     {
-        base.OnDrawingContent();
+        base.OnDrawingSubViews();
 
         var bounds = Viewport;
         int width = bounds.Width;
