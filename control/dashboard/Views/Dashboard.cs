@@ -27,7 +27,7 @@ public sealed class Dashboard : Window
         _dataSimulation.Start();
 
         // TODO: replace with your actual hub URL
-        var hubUrl = "http://localhost:5000/hub/messages";
+        var hubUrl = @"http://192.168.1.88/ws";
 
         _signalR = new SignalRListenerService(hubUrl, message => LogViewer.AddMessage(message));
 
