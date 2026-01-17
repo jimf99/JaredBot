@@ -192,7 +192,9 @@ void onEvent(AsyncWebSocket *server, AsyncWebSocketClient *client, AwsEventType 
       handleWebSocketMessage(arg, data, len);
       break;
     case WS_EVT_PONG:
+      break;
     case WS_EVT_ERROR:
+      Serial.printf("WebSocket error\n", data);
       break;
   }
 }
@@ -269,16 +271,18 @@ void setup(){
 }
 
 void loop() {
+  // Keep WebSocket clients healthy
   ws.cleanupClients();
-  digitalWrite(ledPin, ledState);
 
-    if (Serial2.available()) {
-    String data = Serial2.readStringUntil('\n'); // Read data from UART2
-    Serial.println(data); // Print received data to UART0
-    //NowSerial.print(data);
+  // Check UART2 for incoming telemetry
+  if (Serial2.available()) {
+    String data = Serial2.readStringUntil('\n'); // read until newline
+    data.trim(); // strip CR/LF and whitespace
+
     if (data.length() > 0) {
-      notifyClients(data);
+      // Prefix telemetry so downstream clients can distinguish it
+      notifyClients("T:" + data);
     }
   }
-
 }
+
