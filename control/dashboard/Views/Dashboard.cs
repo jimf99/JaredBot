@@ -22,16 +22,16 @@ public sealed class Dashboard : Window
         InitializeMenu();
         InitializeLogView();
 
-        // Start data simulation (optional: comment this out once SignalR is verified)
-        _dataSimulation = new DataSimulationService(message => LogViewer.AddMessage(message));
-        _dataSimulation.Start();
+        // Optional: keep or remove the simulation
+        //_dataSimulation = new DataSimulationService(message => LogViewer.AddMessage(message));
+        //_dataSimulation.Start();
 
-        // TODO: replace with your actual hub URL
-        var hubUrl = @"http://192.168.1.88/ws";
+        // Point to the same ESP32 endpoint as signalR-playground
+        var hubUrl = "ws://192.168.1.88/ws";
 
         _signalR = new SignalRListenerService(hubUrl, message => LogViewer.AddMessage(message));
 
-        // Fire-and-forget; TUI has no async ctor
+        // Fire-and-forget; Terminal.Gui has no async ctor
         _ = _signalR.StartAsync();
     }
 

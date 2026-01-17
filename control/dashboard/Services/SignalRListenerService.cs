@@ -1,61 +1,218 @@
 using System;
+using System.Net.Sockets;
+using System.Net.WebSockets;
+using System.Text;
+using System.Text.RegularExpressions;
 using System.Threading;
 using System.Threading.Tasks;
-using Microsoft.AspNetCore.SignalR.Client;
 
 namespace dashboard.Services;
 
 public sealed class SignalRListenerService : IAsyncDisposable
 {
-    private readonly HubConnection _connection;
+    private readonly Uri _uri;
     private readonly Action<string> _onMessage;
     private readonly CancellationTokenSource _cts = new();
 
+    // Backoff settings (same as playground)
+    private const int MinBackoffMs = 500;
+    private const int MaxBackoffMs = 30_000;
+    private const double BackoffFactor = 2.0;
+
     public SignalRListenerService(string hubUrl, Action<string> onMessage)
     {
+        if (!Uri.TryCreate(hubUrl, UriKind.Absolute, out var uri) ||
+            (uri.Scheme != "ws" && uri.Scheme != "wss"))
+        {
+            throw new ArgumentException($"Invalid websocket URI: {hubUrl}", nameof(hubUrl));
+        }
+
+        _uri = uri;
         _onMessage = onMessage ?? throw new ArgumentNullException(nameof(onMessage));
-
-        _connection = new HubConnectionBuilder()
-            .WithUrl(hubUrl)
-            .WithAutomaticReconnect()
-            .Build();
-
-        // Generic string message handler — tweak method name/parameters
-        _connection.On<string>("ReceiveMessage", message =>
-        {
-            _onMessage($"[SignalR] {message}");
-        });
-
-        _connection.Reconnecting += error =>
-        {
-            _onMessage($"[SignalR] Reconnecting: {error?.Message}");
-            return Task.CompletedTask;
-        };
-
-        _connection.Reconnected += connectionId =>
-        {
-            _onMessage($"[SignalR] Reconnected. ConnectionId={connectionId}");
-            return Task.CompletedTask;
-        };
-
-        _connection.Closed += error =>
-        {
-            _onMessage($"[SignalR] Closed: {error?.Message}");
-            return Task.CompletedTask;
-        };
     }
 
     public async Task StartAsync()
     {
+        _onMessage($"[WS] Connecting to {_uri} (press 'Q' in dashboard to quit).");
+
+        var backoffMs = MinBackoffMs;
+
+        while (!_cts.IsCancellationRequested)
+        {
+            try
+            {
+                await ConnectAndReceiveLoopAsync(_uri, _cts.Token);
+
+                // Normal close: reset backoff
+                backoffMs = MinBackoffMs;
+            }
+            catch (OperationCanceledException) when (_cts.IsCancellationRequested)
+            {
+                break;
+            }
+            catch (Exception ex)
+            {
+                _onMessage($"[WS] Loop failed: {ex.Message}");
+
+                if (ex is WebSocketException wex)
+                {
+                    _onMessage($"[WS] WebSocketException: ErrorCode={wex.ErrorCode}, WebSocketErrorCode={wex.WebSocketErrorCode}");
+                }
+
+                if (ex.InnerException is SocketException sex)
+                {
+                    _onMessage($"[WS] SocketException: Code={sex.SocketErrorCode}, Message={sex.Message}");
+                }
+
+                _onMessage($"[WS] Reconnecting in {backoffMs}ms...");
+
+                try
+                {
+                    await Task.Delay(backoffMs, _cts.Token);
+                    backoffMs = MinBackoffMs;
+                }
+                catch (OperationCanceledException)
+                {
+                    break;
+                }
+
+                backoffMs = Math.Min(MaxBackoffMs, (int)(backoffMs * BackoffFactor));
+            }
+        }
+
+        _onMessage("[WS] Listener stopped.");
+    }
+
+    private async Task ConnectAndReceiveLoopAsync(Uri uri, CancellationToken cancellation)
+    {
+        using var ws = new ClientWebSocket();
+        ws.Options.KeepAliveInterval = TimeSpan.FromSeconds(20);
+
+        using var connectTimeout = CancellationTokenSource.CreateLinkedTokenSource(cancellation);
+        connectTimeout.CancelAfter(TimeSpan.FromSeconds(15));
+
+        await ws.ConnectAsync(uri, connectTimeout.Token);
+        _onMessage("[WS] Connected. Receiving frames until shutdown or remote close...");
+
+        var buffer = new byte[16 * 1024];
+
         try
         {
-            await _connection.StartAsync(_cts.Token);
-            _onMessage("[SignalR] Connected.");
+            while (!cancellation.IsCancellationRequested && ws.State == WebSocketState.Open)
+            {
+                using var ms = new System.IO.MemoryStream();
+                WebSocketReceiveResult result;
+
+                try
+                {
+                    do
+                    {
+                        result = await ws.ReceiveAsync(new ArraySegment<byte>(buffer), cancellation);
+
+                        if (result.MessageType == WebSocketMessageType.Close)
+                        {
+                            _onMessage($"[WS] Server sent close: {result.CloseStatus} - {result.CloseStatusDescription}");
+                            await ws.CloseOutputAsync(WebSocketCloseStatus.NormalClosure, "Client ack", CancellationToken.None);
+                            return;
+                        }
+
+                        ms.Write(buffer, 0, result.Count);
+                    } while (!result.EndOfMessage);
+                }
+                catch (WebSocketException wex)
+                {
+                    _onMessage($"[WS] Receive failed: {wex.Message}");
+                    _onMessage($"[WS] WebSocketState={ws.State}, ErrorCode={wex.ErrorCode}, WebSocketErrorCode={wex.WebSocketErrorCode}");
+                    throw;
+                }
+                catch (OperationCanceledException) when (cancellation.IsCancellationRequested)
+                {
+                    break;
+                }
+
+                var messageBytes = ms.ToArray();
+                await ProcessFrameAsync(result.MessageType, messageBytes);
+            }
         }
-        catch (Exception ex)
+        finally
         {
-            _onMessage($"[SignalR] Failed to connect: {ex.Message}");
+            if (ws.State == WebSocketState.Open)
+            {
+                try
+                {
+                    await ws.CloseAsync(WebSocketCloseStatus.NormalClosure, "Client done", CancellationToken.None);
+                }
+                catch
+                {
+                    // ignore close errors
+                }
+            }
         }
+    }
+
+    private Task ProcessFrameAsync(WebSocketMessageType type, byte[] payload)
+    {
+        var utc = DateTime.UtcNow;
+        //_onMessage($"{utc:O} Frame -> type={type} length={payload.Length}");
+
+        if (type == WebSocketMessageType.Text)
+        {
+            var text = SafeUtf8(payload);
+            _onMessage(text);
+
+            var pairs = ParseKeyValuePairs(text);
+            if (pairs.Count > 0)
+            {
+                foreach (var kv in pairs)
+                {
+                    _onMessage($"{kv.Key} = {kv.Value}");
+                }
+            }
+        }
+        else
+        {
+            var previewLen = Math.Min(payload.Length, 128);
+            var hex = Convert.ToHexString(payload, 0, previewLen);
+            var preview = payload.Length <= previewLen ? hex : hex + "...";
+            _onMessage($"Binary preview (hex): {preview}");
+        }
+
+        return Task.CompletedTask;
+    }
+
+    private static string SafeUtf8(byte[] bytes)
+    {
+        try
+        {
+            return Encoding.UTF8.GetString(bytes);
+        }
+        catch
+        {
+            return "<invalid-utf8>";
+        }
+    }
+
+    private static System.Collections.Generic.Dictionary<string, string> ParseKeyValuePairs(string input)
+    {
+        var dict = new System.Collections.Generic.Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        var pattern = new Regex(@"(?<k>[A-Za-z0-9_]+)\s*=\s*(?<v>[^\s]+)", RegexOptions.Compiled);
+
+        foreach (Match m in pattern.Matches(input))
+        {
+            var k = m.Groups["k"].Value;
+            var v = m.Groups["v"].Value;
+
+            if (!dict.ContainsKey(k))
+            {
+                dict[k] = v;
+            }
+            else
+            {
+                dict[k] = dict[k] + "," + v;
+            }
+        }
+
+        return dict;
     }
 
     public async ValueTask DisposeAsync()
@@ -68,15 +225,7 @@ public sealed class SignalRListenerService : IAsyncDisposable
         {
         }
 
-        try
-        {
-            await _connection.StopAsync();
-        }
-        catch
-        {
-        }
-
-        await _connection.DisposeAsync();
         _cts.Dispose();
+        await Task.CompletedTask;
     }
 }

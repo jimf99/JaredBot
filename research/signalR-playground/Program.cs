@@ -96,6 +96,10 @@ namespace signalR_playground
 
                     await ws.ConnectAsync(innerUri, connectTimeout.Token);
                     connectedAtLeastOnce = true;
+                    if (connectedAtLeastOnce)
+                    {
+                        backoffMs = MinBackoffMs;
+                    }
 
                     Console.WriteLine("Connected. Receiving frames until shutdown or remote close...");
 
