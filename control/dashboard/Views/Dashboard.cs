@@ -16,8 +16,12 @@ public sealed class Dashboard : Window
     private readonly TelemetryState _telemetry;
     private readonly SignalRListenerService _signalR;
 
-    // Simple telemetry display line
-    private readonly Label _telemetryLabel;
+    // Per-property views
+    private readonly Label _rollValueLabel;
+    private readonly Label _pitchValueLabel;
+    private readonly Label _yawValueLabel;
+    private readonly Label _c1ValueLabel;
+    private readonly Label _c2ValueLabel;
 
     public Dashboard()
     {
@@ -25,16 +29,109 @@ public sealed class Dashboard : Window
 
         InitializeMenu();
 
-        _telemetryLabel = new Label
+        // Top third height for telemetry
+        var telemetryHeight = Dim.Percent(33);
+
+        // We will place 5 boxes side-by-side, each taking 20% width
+        int boxCount = 5;
+        Dim boxWidth = Dim.Percent(100 / boxCount);
+
+        // Roll
+        var rollFrame = new FrameView
         {
+            Title = "Roll",
             X = 0,
             Y = 1,
-            Width = Dim.Fill(),
-            Height = 1,
-            Text = "Telemetry: (waiting for data...)"
+            Width = boxWidth,
+            Height = telemetryHeight
         };
-        Add(_telemetryLabel);
+        _rollValueLabel = new Label
+        {
+            Text = "0.00",
+            X = Pos.Center(),
+            Y = Pos.Center(),
+            Width = 10
+        };
+        rollFrame.Add(_rollValueLabel);
+        Add(rollFrame);
 
+        // Pitch
+        var pitchFrame = new FrameView
+        {
+            Title = "Pitch",
+            X = Pos.Right(rollFrame),
+            Y = 1,
+            Width = boxWidth,
+            Height = telemetryHeight
+        };
+        _pitchValueLabel = new Label
+        {
+            Text = "0.00",
+            X = Pos.Center(),
+            Y = Pos.Center(),
+            Width = 10
+        };
+        pitchFrame.Add(_pitchValueLabel);
+        Add(pitchFrame);
+
+        // Yaw
+        var yawFrame = new FrameView
+        {
+            Title = "Yaw",
+            X = Pos.Right(pitchFrame),
+            Y = 1,
+            Width = boxWidth,
+            Height = telemetryHeight
+        };
+        _yawValueLabel = new Label
+        {
+            Text = "0.00",
+            X = Pos.Center(),
+            Y = Pos.Center(),
+            Width = 10
+        };
+        yawFrame.Add(_yawValueLabel);
+        Add(yawFrame);
+
+        // Custom1
+        var c1Frame = new FrameView
+        {
+            Title = "C1",
+            X = Pos.Right(yawFrame),
+            Y = 1,
+            Width = boxWidth,
+            Height = telemetryHeight
+        };
+        _c1ValueLabel = new Label
+        {
+            Text = "0.00",
+            X = Pos.Center(),
+            Y = Pos.Center(),
+            Width = 10
+        };
+        c1Frame.Add(_c1ValueLabel);
+        Add(c1Frame);
+
+        // Custom2
+        var c2Frame = new FrameView
+        {
+            Title = "C2",
+            X = Pos.Right(c1Frame),
+            Y = 1,
+            Width = boxWidth,
+            Height = telemetryHeight
+        };
+        _c2ValueLabel = new Label
+        {
+            Text = "0.00",
+            X = Pos.Center(),
+            Y = Pos.Center(),
+            Width = 10
+        };
+        c2Frame.Add(_c2ValueLabel);
+        Add(c2Frame);
+
+        // Log view in the bottom portion
         InitializeLogView();
 
         _telemetry = new TelemetryState();
@@ -52,11 +149,14 @@ public sealed class Dashboard : Window
 
     private void UpdateTelemetryView(TelemetrySnapshot snapshot)
     {
-        // Simple formatting; adjust names as you like
-        var text =
-            $"Telemetry: Roll={snapshot.Roll:0.00}, Pitch={snapshot.Pitch:0.00}, Yaw={snapshot.Yaw:0.00}, C1={snapshot.Custom1:0.00}, C2={snapshot.Custom2:0.00}";
+        // Format values; null-safe with "—" fallback
+        static string F(double? v) => v.HasValue ? v.Value.ToString("0.00") : "—";
 
-        _telemetryLabel.Text = text;
+        _rollValueLabel.Text = F(snapshot.Roll);
+        _pitchValueLabel.Text = F(snapshot.Pitch);
+        _yawValueLabel.Text = F(snapshot.Yaw);
+        _c1ValueLabel.Text = F(snapshot.Custom1);
+        _c2ValueLabel.Text = F(snapshot.Custom2);
     }
 
     private void InitializeMenu()
