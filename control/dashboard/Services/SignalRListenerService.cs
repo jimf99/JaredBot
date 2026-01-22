@@ -63,6 +63,12 @@ public sealed class SignalRListenerService : IAsyncDisposable
             {
                 break;
             }
+            catch (WebSocketException wex) when (wex.WebSocketErrorCode == WebSocketError.ConnectionClosedPrematurely)
+            {
+                _onMessage("[WS] Connection closed prematurely by remote. Will retry.");
+                _onMessage($"[WS] WebSocketException: ErrorCode={wex.ErrorCode}, WebSocketErrorCode={wex.WebSocketErrorCode}");
+                backoffMs = await WaitWithBackoffAsync(backoffMs);
+            }
             catch (Exception ex)
             {
                 _onMessage($"[WS] Loop failed: {ex.Message}");
@@ -73,22 +79,28 @@ public sealed class SignalRListenerService : IAsyncDisposable
                 if (ex.InnerException is SocketException sex)
                     _onMessage($"[WS] SocketException: Code={sex.SocketErrorCode}, Message={sex.Message}");
 
-                _onMessage($"[WS] Reconnecting in {backoffMs}ms...");
-
-                try
-                {
-                    await Task.Delay(backoffMs, _cts.Token);
-                }
-                catch (OperationCanceledException)
-                {
-                    break;
-                }
-
-                backoffMs = Math.Min(MaxBackoffMs, (int)(backoffMs * BackoffFactor));
+                backoffMs = await WaitWithBackoffAsync(backoffMs);
             }
         }
 
         _onMessage("[WS] Listener stopped.");
+    }
+
+    private async Task<int> WaitWithBackoffAsync(int backoffMs)
+    {
+        _onMessage($"[WS] Reconnecting in {backoffMs}ms...");
+
+        try
+        {
+            await Task.Delay(backoffMs, _cts.Token);
+        }
+        catch (OperationCanceledException)
+        {
+            return backoffMs;
+        }
+
+        backoffMs = Math.Min(MaxBackoffMs, (int)(backoffMs * BackoffFactor));
+        return backoffMs;
     }
 
     private async Task<bool> ConnectAndReceiveLoopAsync(Uri uri, CancellationToken cancellation)

@@ -58,8 +58,7 @@ public sealed class SignalRListenerService : IAsyncDisposable
             {
                 _onMessage("[WS] Connection closed prematurely by remote. Will retry.");
                 _onMessage($"[WS] WebSocketException: ErrorCode={wex.ErrorCode}, WebSocketErrorCode={wex.WebSocketErrorCode}");
-
-                await WaitWithBackoffAsync(ref backoffMs);
+                backoffMs = await WaitWithBackoffAsync(backoffMs);
             }
             catch (Exception ex)
             {
@@ -71,32 +70,33 @@ public sealed class SignalRListenerService : IAsyncDisposable
                 if (ex.InnerException is SocketException sex)
                     _onMessage($"[WS] SocketException: Code={sex.SocketErrorCode}, Message={sex.Message}");
 
-                await WaitWithBackoffAsync(ref backoffMs);
+                backoffMs = await WaitWithBackoffAsync(backoffMs);
             }
         }
 
         _onMessage("[WS] Listener stopped.");
     }
 
-    private async Task WaitWithBackoffAsync(ref int backoffMs)
+    private async Task<int> WaitWithBackoffAsync(int backoffMs)
     {
         _onMessage($"[WS] Reconnecting in {backoffMs}ms...");
+
         try
         {
             await Task.Delay(backoffMs, _cts.Token);
         }
         catch (OperationCanceledException)
         {
-            return;
+            return backoffMs;
         }
 
-        backoffMs = Math.Min(MaxBackoffMs, (int)(backoffMs * BackoffFactor));
+        return Math.Min(MaxBackoffMs, (int)(backoffMs * BackoffFactor));
     }
 
     private async Task<bool> ConnectAndReceiveLoopAsync(Uri uri, CancellationToken cancellation)
     {
         using var ws = new ClientWebSocket();
-        ws.Options.KeepAliveInterval = TimeSpan.FromSeconds(0); // disable built-in pings (ESP32-friendly)
+        ws.Options.KeepAliveInterval = TimeSpan.FromSeconds(0); // disable built-in pings
 
         using var connectTimeout = CancellationTokenSource.CreateLinkedTokenSource(cancellation);
         connectTimeout.CancelAfter(TimeSpan.FromSeconds(30)); // give ESP32 more time
@@ -124,7 +124,7 @@ public sealed class SignalRListenerService : IAsyncDisposable
                         {
                             _onMessage($"[WS] Server sent close: {result.CloseStatus} - {result.CloseStatusDescription}");
                             await ws.CloseOutputAsync(WebSocketCloseStatus.NormalClosure, "Client ack", CancellationToken.None);
-                            return gotAnyData; // clean close; if we saw data, consider it a successful session
+                            return gotAnyData;
                         }
 
                         if (result.Count > 0)
@@ -136,9 +136,11 @@ public sealed class SignalRListenerService : IAsyncDisposable
                 }
                 catch (WebSocketException wsex)
                 {
-                    _onMessage($"[WS] Receive failed: {wsex.Message}");
+                    // This is where ConnectionClosedPrematurely shows up
+                    _onMessage($"[WS] Receive failed: {wex.Message}");
                     _onMessage($"[WS] WebSocketState={ws.State}, ErrorCode={wsex.ErrorCode}, WebSocketErrorCode={wsex.WebSocketErrorCode}");
-                    throw;
+                    // Do NOT rethrow; break out and let StartAsync handle reconnect/backoff
+                    break;
                 }
                 catch (OperationCanceledException) when (cancellation.IsCancellationRequested)
                 {
@@ -158,8 +160,8 @@ public sealed class SignalRListenerService : IAsyncDisposable
             }
         }
 
-        // If we reached here without an exception, treat as a successful session (even if no data)
-        return gotAnyData || true;
+        // We connected; report whether we saw any data
+        return gotAnyData;
     }
 
     private Task ProcessFrameAsync(WebSocketMessageType type, byte[] payload)
