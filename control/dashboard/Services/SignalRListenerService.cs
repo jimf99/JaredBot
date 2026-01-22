@@ -5,6 +5,7 @@ using System.Text;
 using System.Text.RegularExpressions;
 using System.Threading;
 using System.Threading.Tasks;
+using dashboard.Models;
 
 namespace dashboard.Services;
 
@@ -12,6 +13,8 @@ public sealed class SignalRListenerService : IAsyncDisposable
 {
     private readonly Uri _uri;
     private readonly Action<string> _onMessage;
+    private readonly Action<TelemetrySnapshot>? _onTelemetry;
+    private readonly TelemetryState? _telemetry;
     private readonly CancellationTokenSource _cts = new();
 
     // Backoff settings (same as playground)
@@ -19,7 +22,11 @@ public sealed class SignalRListenerService : IAsyncDisposable
     private const int MaxBackoffMs = 30_000;
     private const double BackoffFactor = 2.0;
 
-    public SignalRListenerService(string hubUrl, Action<string> onMessage)
+    public SignalRListenerService(
+        string hubUrl,
+        Action<string> onMessage,
+        TelemetryState? telemetry = null,
+        Action<TelemetrySnapshot>? onTelemetry = null)
     {
         if (!Uri.TryCreate(hubUrl, UriKind.Absolute, out var uri) ||
             (uri.Scheme != "ws" && uri.Scheme != "wss"))
@@ -29,6 +36,8 @@ public sealed class SignalRListenerService : IAsyncDisposable
 
         _uri = uri;
         _onMessage = onMessage ?? throw new ArgumentNullException(nameof(onMessage));
+        _telemetry = telemetry;
+        _onTelemetry = onTelemetry;
     }
 
     public async Task StartAsync()
@@ -120,7 +129,7 @@ public sealed class SignalRListenerService : IAsyncDisposable
                             gotAnyData = true;
 
                         ms.Write(buffer, 0, result.Count);
-                    }
+                    } 
                     while (!result.EndOfMessage);
                 }
                 catch (WebSocketException wsex)
@@ -152,20 +161,30 @@ public sealed class SignalRListenerService : IAsyncDisposable
 
     private Task ProcessFrameAsync(WebSocketMessageType type, byte[] payload)
     {
-        var utc = DateTime.UtcNow;
-        //_onMessage($"{utc:O} Frame -> type={type} length={payload.Length}");
-
         if (type == WebSocketMessageType.Text)
         {
             var text = SafeUtf8(payload);
-            _onMessage(text);
+            _onMessage(text); // raw line to log
 
-            var pairs = ParseKeyValuePairs(text);
-            if (pairs.Count > 0)
+            if (text.StartsWith("T:", StringComparison.OrdinalIgnoreCase))
             {
-                foreach (var kv in pairs)
+                var snapshot = ParseTelemetryCsv(text);
+                if ( snapshot is not null)
                 {
-                    _onMessage($"{kv.Key} = {kv.Value}");
+                    // Update shared state if used
+                    _telemetry?.Update(snapshot);
+                    // Immediate UI update callback
+                    _onTelemetry?.Invoke(snapshot);
+                }
+            }
+            else
+            {
+                // optional: keep key=value parsing for non-telemetry messages
+                var pairs = ParseKeyValuePairs(text);
+                if (pairs.Count > 0)
+                {
+                    foreach (var kv in pairs)
+                        _onMessage($"{kv.Key} = {kv.Value}");
                 }
             }
         }
@@ -178,6 +197,54 @@ public sealed class SignalRListenerService : IAsyncDisposable
         }
 
         return Task.CompletedTask;
+    }
+
+    private TelemetrySnapshot? ParseTelemetryCsv(string line)
+    {
+        // Example: T:-0.01,0.36,6.02,2.00,2.00
+        var span = line.AsSpan().Trim();
+
+        if (span.StartsWith("T:", StringComparison.OrdinalIgnoreCase))
+        {
+            span = span[2..].TrimStart();
+        }
+
+        var csv = span.ToString();
+        var parts = csv.Split(',', StringSplitOptions.TrimEntries);
+
+        if (parts.Length < 3)
+            return null; // not enough data
+
+        double? TryDoubleAt(int index)
+        {
+            if (index < 0 || index >= parts.Length)
+                return null;
+
+            var s = parts[index];
+            if (double.TryParse(
+                    s,
+                    System.Globalization.NumberStyles.Any,
+                    System.Globalization.CultureInfo.InvariantCulture,
+                    out var v))
+            {
+                return v;
+            }
+
+            return null;
+        }
+
+        return new TelemetrySnapshot
+        {
+            UtcTimestamp = DateTime.UtcNow,
+            RawLine = line,
+
+            Roll = TryDoubleAt(0),
+            Pitch = TryDoubleAt(1),
+            Yaw = TryDoubleAt(2),
+
+            Custom1 = TryDoubleAt(3),
+            Custom2 = TryDoubleAt(4)
+        };
     }
 
     private static string SafeUtf8(byte[] bytes)

@@ -3,6 +3,7 @@ using Terminal.Gui.App;
 using Terminal.Gui.ViewBase;
 using Terminal.Gui.Views;
 using Terminal.Gui.Drawing;
+using dashboard.Models;
 using dashboard.Services;
 
 namespace dashboard.Views;
@@ -12,27 +13,50 @@ public sealed class Dashboard : Window
     public MenuBar MenuBarV2 { get; private set; }
     public LogView LogViewer { get; private set; }
 
-    private readonly DataSimulationService _dataSimulation;
+    private readonly TelemetryState _telemetry;
     private readonly SignalRListenerService _signalR;
+
+    // Simple telemetry display line
+    private readonly Label _telemetryLabel;
 
     public Dashboard()
     {
         Title = "Dashboard";
 
         InitializeMenu();
+
+        _telemetryLabel = new Label
+        {
+            X = 0,
+            Y = 1,
+            Width = Dim.Fill(),
+            Height = 1,
+            Text = "Telemetry: (waiting for data...)"
+        };
+        Add(_telemetryLabel);
+
         InitializeLogView();
 
-        // Optional: keep or remove the simulation
-        //_dataSimulation = new DataSimulationService(message => LogViewer.AddMessage(message));
-        //_dataSimulation.Start();
+        _telemetry = new TelemetryState();
 
-        // Point to the same ESP32 endpoint as signalR-playground
         var hubUrl = "ws://192.168.1.88/ws";
 
-        _signalR = new SignalRListenerService(hubUrl, message => LogViewer.AddMessage(message));
+        _signalR = new SignalRListenerService(
+            hubUrl,
+            message => LogViewer.AddMessage(message),
+            _telemetry,
+            snapshot => Application.Invoke(() => UpdateTelemetryView(snapshot)));
 
-        // Fire-and-forget; Terminal.Gui has no async ctor
         _ = _signalR.StartAsync();
+    }
+
+    private void UpdateTelemetryView(TelemetrySnapshot snapshot)
+    {
+        // Simple formatting; adjust names as you like
+        var text =
+            $"Telemetry: Roll={snapshot.Roll:0.00}, Pitch={snapshot.Pitch:0.00}, Yaw={snapshot.Yaw:0.00}, C1={snapshot.Custom1:0.00}, C2={snapshot.Custom2:0.00}";
+
+        _telemetryLabel.Text = text;
     }
 
     private void InitializeMenu()
@@ -84,11 +108,8 @@ public sealed class Dashboard : Window
     {
         if (disposing)
         {
-            _dataSimulation?.Dispose();
-
             if (_signalR is not null)
             {
-                // Best-effort async dispose
                 _ = _signalR.DisposeAsync();
             }
         }
