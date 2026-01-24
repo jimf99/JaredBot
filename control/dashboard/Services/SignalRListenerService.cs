@@ -88,19 +88,21 @@ public sealed class SignalRListenerService : IAsyncDisposable
 
     private async Task<int> WaitWithBackoffAsync(int backoffMs)
     {
-        _onMessage($"[WS] Reconnecting in {backoffMs}ms...");
+        const int ConstantBackoffMs = 750;
+
+        _onMessage($"[WS] Reconnecting in {ConstantBackoffMs}ms...");
 
         try
         {
-            await Task.Delay(backoffMs, _cts.Token);
+            await Task.Delay(ConstantBackoffMs, _cts.Token);
         }
         catch (OperationCanceledException)
         {
-            return backoffMs;
+            return ConstantBackoffMs;
         }
 
-        backoffMs = Math.Min(MaxBackoffMs, (int)(backoffMs * BackoffFactor));
-        return backoffMs;
+        // Always return the same backoff
+        return ConstantBackoffMs;
     }
 
     private async Task<bool> ConnectAndReceiveLoopAsync(Uri uri, CancellationToken cancellation)

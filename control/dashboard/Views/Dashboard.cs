@@ -29,12 +29,11 @@ public sealed class Dashboard : Window
 
         InitializeMenu();
 
-        // Top third height for telemetry
-        var telemetryHeight = Dim.Percent(33);
+        var telemetryHeight = Dim.Absolute(3);
 
         // We will place 5 boxes side-by-side, each taking 20% width
         int boxCount = 5;
-        Dim boxWidth = Dim.Percent(100 / boxCount);
+        Dim boxWidth = Dim.Absolute(12);
 
         // Roll
         var rollFrame = new FrameView
@@ -43,14 +42,17 @@ public sealed class Dashboard : Window
             X = 0,
             Y = 1,
             Width = boxWidth,
-            Height = telemetryHeight
+            Height = telemetryHeight,
+            TextAlignment = Alignment.End
         };
         _rollValueLabel = new Label
         {
-            Text = "0.00",
-            X = Pos.Center(),
+            Text = "0.000",
+            // Fill the frame horizontally so right-align works nicely
+            X = 0,
             Y = Pos.Center(),
-            Width = 10
+            Width = Dim.Fill(),
+            TextAlignment = Alignment.End
         };
         rollFrame.Add(_rollValueLabel);
         Add(rollFrame);
@@ -66,10 +68,11 @@ public sealed class Dashboard : Window
         };
         _pitchValueLabel = new Label
         {
-            Text = "0.00",
-            X = Pos.Center(),
+            Text = "0.000",
+            X = 0,
             Y = Pos.Center(),
-            Width = 10
+            Width = Dim.Fill(),
+            TextAlignment = Alignment.End
         };
         pitchFrame.Add(_pitchValueLabel);
         Add(pitchFrame);
@@ -85,10 +88,11 @@ public sealed class Dashboard : Window
         };
         _yawValueLabel = new Label
         {
-            Text = "0.00",
-            X = Pos.Center(),
+            Text = "0.000",
+            X = 0,
             Y = Pos.Center(),
-            Width = 10
+            Width = Dim.Fill(),
+            TextAlignment = Alignment.End
         };
         yawFrame.Add(_yawValueLabel);
         Add(yawFrame);
@@ -104,10 +108,11 @@ public sealed class Dashboard : Window
         };
         _c1ValueLabel = new Label
         {
-            Text = "0.00",
-            X = Pos.Center(),
+            Text = "0.000",
+            X = 0,
             Y = Pos.Center(),
-            Width = 10
+            Width = Dim.Fill(),
+            TextAlignment = Alignment.End
         };
         c1Frame.Add(_c1ValueLabel);
         Add(c1Frame);
@@ -123,10 +128,11 @@ public sealed class Dashboard : Window
         };
         _c2ValueLabel = new Label
         {
-            Text = "0.00",
-            X = Pos.Center(),
+            Text = "0.000",
+            X = 0,
             Y = Pos.Center(),
-            Width = 10
+            Width = Dim.Fill(),
+            TextAlignment = Alignment.End
         };
         c2Frame.Add(_c2ValueLabel);
         Add(c2Frame);
@@ -150,7 +156,7 @@ public sealed class Dashboard : Window
     private void UpdateTelemetryView(TelemetrySnapshot snapshot)
     {
         // Format values; null-safe with "—" fallback
-        static string F(double? v) => v.HasValue ? v.Value.ToString("0.00") : "—";
+        static string F(double? v) => v.HasValue ? v.Value.ToString("0.000") : "—";
 
         _rollValueLabel.Text = F(snapshot.Roll);
         _pitchValueLabel.Text = F(snapshot.Pitch);
