@@ -1,10 +1,11 @@
-using System;
+﻿using System;
 using Terminal.Gui.App;
 using Terminal.Gui.ViewBase;
 using Terminal.Gui.Views;
 using Terminal.Gui.Drawing;
 using dashboard.Models;
 using dashboard.Services;
+using Terminal.Gui.Drivers;
 
 namespace dashboard.Views;
 
@@ -22,6 +23,28 @@ public sealed class Dashboard : Window
     private readonly Label _yawValueLabel;
     private readonly Label _c1ValueLabel;
     private readonly Label _c2ValueLabel;
+
+    // Config frames: setpoint + PID + Kalman
+    private readonly Label _setpointLabel;
+    private readonly TextField _setpointInput;
+
+    private readonly Label _pidPLabel;
+    private readonly TextField _pidPInput;
+
+    private readonly Label _pidILabel;
+    private readonly TextField _pidIInput;
+
+    private readonly Label _pidDLabel;
+    private readonly TextField _pidDInput;
+
+    private readonly Label _kalmanQLabel;
+    private readonly TextField _kalmanQInput;
+
+    private readonly Label _kalmanRLabel;
+    private readonly TextField _kalmanRInput;
+
+    private readonly Label _kalmanNLabel;
+    private readonly TextField _kalmanNInput;
 
     public Dashboard()
     {
@@ -137,6 +160,212 @@ public sealed class Dashboard : Window
         c2Frame.Add(_c2ValueLabel);
         Add(c2Frame);
 
+        //
+        // --- CONFIG FRAMES (FAKE DATA FOR NOW) ---
+        //
+
+        // Start these config frames one row below the telemetry row.
+        // Telemetry row: Y = 1, Height = 3 → next row is 4.
+        int configY = 4;
+
+        // Setpoint
+        var setpointFrame = new FrameView
+        {
+            Title = "Setpoint",
+            X = 0,
+            Y = configY,
+            Width = Dim.Absolute(20),
+            Height = Dim.Absolute(4)
+        };
+
+        _setpointLabel = new Label
+        {
+            Text = "0.000",     // fake initial value
+            X = 1,
+            Y = 0,
+            Width = Dim.Fill(),
+            TextAlignment = Alignment.End
+        };
+
+        _setpointInput = new TextField()
+        {
+            Text = "0.12345",
+            X = Pos.AnchorEnd(10 + 1),
+            Y = 1,
+            Width = 10,                  // fixed width
+            TextAlignment = Alignment.End,
+            TextDirection = Terminal.Gui.Text.TextDirection.RightLeft_BottomTop
+        };
+
+        _setpointInput.KeyDown += (source, args) =>
+        {
+            if (args.KeyCode == KeyCode.Enter)
+            {
+                var text = _setpointInput.Text.ToString() ?? string.Empty;
+                if (double.TryParse(text, out var value))
+                {
+                    _setpointLabel.Text = value.ToString("0.000");
+                    // later: send to SignalR hub
+                    LogViewer.AddMessage($"[CFG] Setpoint updated to {value:0.000}");
+                }
+                else
+                {
+                    LogViewer.AddMessage($"[CFG] Invalid setpoint: '{text}'");
+                }
+            }
+        };
+
+        setpointFrame.Add(_setpointLabel);
+        setpointFrame.Add(_setpointInput);
+        Add(setpointFrame);
+
+        // PID P
+        var pidPFrame = new FrameView
+        {
+            Title = "PID P",
+            X = Pos.Right(setpointFrame),
+            Y = configY,
+            Width = Dim.Absolute(18),
+            Height = Dim.Absolute(4)
+        };
+
+        _pidPLabel = new Label
+        {
+            Text = "1.000",
+            X = 1,
+            Y = 0,
+            Width = Dim.Fill(),
+            TextAlignment = Alignment.End
+        };
+
+        _pidPInput = new TextField()
+        {
+            Text = "1.000",
+            X = 1,
+            Y = 1,
+            Width = 10,
+            TextAlignment = Alignment.End
+        };
+
+        _pidPInput.KeyDown += (source, args) =>
+        {
+            if (args.KeyCode == KeyCode.Enter)
+            {
+                var text = _pidPInput.Text.ToString() ?? string.Empty;
+                if (double.TryParse(text, out var value))
+                {
+                    _pidPLabel.Text = value.ToString("0.000");
+                    LogViewer.AddMessage($"[CFG] PID P updated to {value:0.000}");
+                }
+                else
+                {
+                    LogViewer.AddMessage($"[CFG] Invalid PID P: '{text}'");
+                }
+            }
+        };
+
+        pidPFrame.Add(_pidPLabel);
+        pidPFrame.Add(_pidPInput);
+        Add(pidPFrame);
+
+        // PID I
+        var pidIFrame = new FrameView
+        {
+            Title = "PID I",
+            X = Pos.Right(pidPFrame),
+            Y = configY,
+            Width = Dim.Absolute(18),
+            Height = Dim.Absolute(4)
+        };
+
+        _pidILabel = new Label
+        {
+            Text = "0.000",
+            X = 1,
+            Y = 0,
+            Width = Dim.Fill(),
+            TextAlignment = Alignment.End
+        };
+
+        _pidIInput = new TextField()
+        {
+            Text = "0.000",
+            X = 1,
+            Y = 1,
+            Width = 10,
+            TextAlignment = Alignment.End
+        };
+
+        _pidIInput.KeyDown += (source, args) =>
+        {
+            if (args.KeyCode == KeyCode.Enter)
+            {
+                var text = _pidIInput.Text.ToString() ?? string.Empty;
+                if (double.TryParse(text, out var value))
+                {
+                    _pidILabel.Text = value.ToString("0.000");
+                    LogViewer.AddMessage($"[CFG] PID I updated to {value:0.000}");
+                }
+                else
+                {
+                    LogViewer.AddMessage($"[CFG] Invalid PID I: '{text}'");
+                }
+            }
+        };
+
+        pidIFrame.Add(_pidILabel);
+        pidIFrame.Add(_pidIInput);
+        Add(pidIFrame);
+
+        // PID D
+        var pidDFrame = new FrameView
+        {
+            Title = "PID D",
+            X = Pos.Right(pidIFrame),
+            Y = configY,
+            Width = Dim.Absolute(18),
+            Height = Dim.Absolute(4)
+        };
+
+        _pidDLabel = new Label
+        {
+            Text = "0.000",
+            X = 1,
+            Y = 0,
+            Width = Dim.Fill(),
+            TextAlignment = Alignment.End
+        };
+
+        _pidDInput = new TextField()
+        {
+            Text = "0.000",
+            X = 1,
+            Y = 1,
+            Width = 10,
+            TextAlignment = Alignment.End
+        };
+
+        _pidDInput.KeyDown += (source, args) =>
+        {
+            if (args.KeyCode == KeyCode.Enter)
+            {
+                var text = _pidDInput.Text.ToString() ?? string.Empty;
+                if (double.TryParse(text, out var value))
+                {
+                    _pidDLabel.Text = value.ToString("0.000");
+                    LogViewer.AddMessage($"[CFG] PID D updated to {value:0.000}");
+                }
+                else
+                {
+                    LogViewer.AddMessage($"[CFG] Invalid PID D: '{text}'");
+                }
+            }
+        };
+
+        pidDFrame.Add(_pidDLabel);
+        pidDFrame.Add(_pidDInput);
+        Add(pidDFrame);
+
         // Log view in the bottom portion
         InitializeLogView();
 
@@ -155,8 +384,8 @@ public sealed class Dashboard : Window
 
     private void UpdateTelemetryView(TelemetrySnapshot snapshot)
     {
-        // Format values; null-safe with "�" fallback
-        static string F(double? v) => v.HasValue ? v.Value.ToString("0.000") : "�";
+        // Format values; null-safe with "—" fallback
+        static string F(double? v) => v.HasValue ? v.Value.ToString("0.000") : "—";
 
         _rollValueLabel.Text = F(snapshot.Roll);
         _pitchValueLabel.Text = F(snapshot.Pitch);
